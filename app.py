@@ -3,12 +3,19 @@ import os
 import re
 import tempfile
 import textwrap
-import tkinter as tk
-from tkinter import filedialog
 from collections import Counter
 from contextlib import redirect_stdout
 from datetime import datetime
 from calendar import monthrange
+
+try:
+    import tkinter as tk
+    from tkinter import filedialog
+    TKINTER_AVAILABLE = True
+except Exception:
+    tk = None
+    filedialog = None
+    TKINTER_AVAILABLE = False
 
 import pandas as pd
 import streamlit as st
@@ -80,6 +87,41 @@ def render_helper_box(message, tone="info", target=None, compact=False):
         html,
         unsafe_allow_html=True,
     )
+
+
+if hasattr(st, "dialog"):
+    @st.dialog("Missing FOAPAL Values", width="medium")
+    def render_foapal_missing_confirm_dialog(missing_count):
+        st.error(
+            f"{missing_count} row(s) are still missing FOAPAL values. Do you want to proceed to Download Output with those values still blank?"
+        )
+        confirm_col1, confirm_spacer, confirm_col2 = st.columns([2.2, 5.6, 2.6])
+        with confirm_col1:
+            if st.button("Continue Review", key="foapal_review_more"):
+                st.session_state.foapal_next_confirm = False
+                st.rerun()
+        with confirm_col2:
+            if st.button("Proceed to Download", key="foapal_confirm_next", use_container_width=True):
+                st.session_state.foapal_next_confirm = False
+                go_next()
+                st.rerun()
+else:
+    def render_foapal_missing_confirm_dialog(missing_count):
+        render_helper_box(
+            f"{missing_count} row(s) are still missing FOAPAL values. Do you want to proceed to Download Output with those values still blank?",
+            "error",
+        )
+        st.markdown("<div style='height: 0.35rem;'></div>", unsafe_allow_html=True)
+        confirm_col1, confirm_spacer, confirm_col2 = st.columns([1.6, 7.4, 1.8])
+        with confirm_col1:
+            if st.button("Review More", key="foapal_review_more"):
+                st.session_state.foapal_next_confirm = False
+                st.rerun()
+        with confirm_col2:
+            if st.button("Proceed Anyway", key="foapal_confirm_next"):
+                st.session_state.foapal_next_confirm = False
+                go_next()
+                st.rerun()
 
 
 def apply_brand_theme():
@@ -203,6 +245,35 @@ def apply_brand_theme():
             border-radius: 10px !important;
             padding: 0.4rem 0.7rem 0.2rem 0.7rem !important;
         }}
+
+        /* Row-nav buttons: ghost outline to distinguish from solid page-nav buttons */
+        .st-key-foapal_prev_row button,
+        .st-key-foapal_next_row button {{
+            background: transparent !important;
+            color: var(--brand-prime) !important;
+            border: 1.5px solid var(--brand-prime) !important;
+            box-shadow: none !important;
+        }}
+        .st-key-foapal_prev_row button:hover,
+        .st-key-foapal_next_row button:hover {{
+            background: rgba(93, 23, 37, 0.08) !important;
+            color: var(--brand-prime) !important;
+            border-color: var(--brand-prime) !important;
+        }}
+
+        .st-key-foapal_prev_row_submit button,
+        .st-key-foapal_next_row_submit button {{
+            background: transparent !important;
+            color: var(--brand-prime) !important;
+            border: 1.5px solid var(--brand-prime) !important;
+            box-shadow: none !important;
+        }}
+        .st-key-foapal_prev_row_submit button:hover,
+        .st-key-foapal_next_row_submit button:hover {{
+            background: rgba(93, 23, 37, 0.08) !important;
+            color: var(--brand-prime) !important;
+            border-color: var(--brand-prime) !important;
+        }}
         </style>
         """,
         unsafe_allow_html=True,
@@ -235,6 +306,8 @@ def render_top_logo():
 
 def browse_for_folder():
     """Open a native OS folder-picker dialog and return the selected path (or empty string)."""
+    if not TKINTER_AVAILABLE:
+        return ""
     root = tk.Tk()
     root.withdraw()
     root.wm_attributes("-topmost", True)
@@ -266,6 +339,7 @@ def init_state():
         "source_output_file": "",
         "foapal_review_df": None,
         "foapal_current_pos": 0,
+        "foapal_next_confirm": False,
         "foapal_review_skipped": False,
         "teams_workflow_original": None,
         "final_output_bytes": None,
@@ -331,6 +405,7 @@ def reset_parse_step_state():
     st.session_state.source_output_file = ""
     st.session_state.foapal_review_df = None
     st.session_state.foapal_current_pos = 0
+    st.session_state.foapal_next_confirm = False
     st.session_state.foapal_review_skipped = False
     st.session_state.final_output_bytes = None
     st.session_state.final_output_name = ""
@@ -341,6 +416,7 @@ def reset_foapal_step_state():
     if st.session_state.teams_workflow_original is not None:
         st.session_state.teams_workflow = st.session_state.teams_workflow_original.copy(deep=True)
     st.session_state.foapal_current_pos = 0
+    st.session_state.foapal_next_confirm = False
     st.session_state.foapal_review_skipped = False
     st.session_state.final_output_bytes = None
     st.session_state.final_output_name = ""
@@ -605,7 +681,9 @@ def render_back_next(can_next=True):
     with c1:
         st.button("Back", on_click=go_back, disabled=st.session_state.step == 0)
     with c2:
-        st.button("Next", on_click=go_next, disabled=not can_next)
+        next_inner_spacer, next_inner = st.columns([1, 1])
+        with next_inner:
+            st.button("Next", on_click=go_next, disabled=not can_next)
 
 
 def run_processing_pipeline():
@@ -793,7 +871,9 @@ elif step == 1:
         with c1:
             st.button("Back", on_click=go_back, disabled=st.session_state.step == 0)
         with c2:
-            st.button("Next", disabled=not can_resume, key="resume_next", on_click=request_resume_load)
+            next_inner_spacer, next_inner = st.columns([1, 1])
+            with next_inner:
+                st.button("Next", disabled=not can_resume, key="resume_next", on_click=request_resume_load)
         if can_resume and st.session_state.resume_requested and resume_file is not None:
             st.session_state.resume_requested = False
             load_from_previous_download(resume_file.getvalue(), st.session_state.batch_date)
@@ -807,15 +887,26 @@ elif step == 1:
         key="workflow_upload",
     )
 
+    available_input_modes = ["ZIP file", "Folder of PDFs"] if TKINTER_AVAILABLE else ["ZIP file"]
+    if st.session_state.input_mode not in available_input_modes:
+        st.session_state.input_mode = "ZIP file"
+
     upload_mode_box = st.container(key="upload_mode_box")
     with upload_mode_box:
         input_mode = st.radio(
             "Bank statement upload method",
-            ["ZIP file", "Folder of PDFs"],
-            index=0 if st.session_state.input_mode == "ZIP file" else 1,
+            available_input_modes,
+            index=available_input_modes.index(st.session_state.input_mode),
             horizontal=True,
         )
     st.session_state.input_mode = input_mode
+
+    if not TKINTER_AVAILABLE:
+        render_helper_box(
+            "Folder of PDFs is only available in the desktop app. On Streamlit Cloud, please upload a ZIP file containing the bank statement PDFs.",
+            "info",
+        )
+        st.markdown("<div style='height: 0.35rem;'></div>", unsafe_allow_html=True)
 
     if input_mode == "ZIP file":
         st.session_state.zip_file = st.file_uploader(
@@ -1046,6 +1137,8 @@ elif step == 3:
             required_cols,
         )])
         clamp_review_position(missing_ids)
+        if not missing_ids:
+            st.session_state.foapal_next_confirm = False
 
         if not missing_ids:
             render_helper_box("No missing FOAPAL values found.", "success")
@@ -1058,11 +1151,39 @@ elif step == 3:
             st.markdown("<div style='height: 0.35rem;'></div>", unsafe_allow_html=True)
             st.caption(f"Reviewing row {st.session_state.foapal_current_pos + 1} of {len(missing_ids)}")
 
+            st.markdown("<div style='height: 0.2rem;'></div>", unsafe_allow_html=True)
+
+            nav_col1, nav_spacer, nav_col2 = st.columns([1.3, 8.4, 1.3])
+            with nav_col1:
+                if st.button(
+                    "◀ Prev Row",
+                    disabled=st.session_state.foapal_current_pos == 0,
+                    key="foapal_prev_row",
+                ):
+                    st.session_state.foapal_next_confirm = False
+                    st.session_state.foapal_current_pos -= 1
+                    st.rerun()
+            with nav_col2:
+                next_row_spacer, next_row_inner = st.columns([1, 1])
+                with next_row_inner:
+                    if st.button(
+                        "Next Row ▶",
+                        disabled=st.session_state.foapal_current_pos >= len(missing_ids) - 1,
+                        key="foapal_next_row",
+                    ):
+                        st.session_state.foapal_next_confirm = False
+                        st.session_state.foapal_current_pos += 1
+                        st.rerun()
+
+            st.markdown("<div style='height: 0.2rem;'></div>", unsafe_allow_html=True)
+
             info_cols = st.columns(4)
             info_cols[0].metric("Date", str(current_row.get('Date of Transaction:', '')))
             info_cols[1].metric("Merchant", str(current_row.get('Merchant:', '')))
             info_cols[2].metric("Card Holder", str(current_row.get('Card Holder:', '')))
             info_cols[3].metric("Amount", str(current_row.get('Amount: $', '')))
+
+            st.markdown("<div style='height: 0.2rem;'></div>", unsafe_allow_html=True)
 
             with st.form(f"foapal_form_{current_row_id}"):
                 col1, col2, col3, col4, col5 = st.columns(5)
@@ -1097,22 +1218,15 @@ elif step == 3:
                         dropdown_options['Program:'],
                         allow_outside_current=False,
                     )
-                submitted = st.form_submit_button("Save This Row")
+                action_spacer, action_save = st.columns([5.2, 0.3])
+                with action_save:
+                    save_clicked = st.form_submit_button(
+                        "Save This Row",
+                        key="foapal_save_row_submit",
+                        use_container_width=True,
+                    )
 
-            nav1, nav_spacer, nav2 = st.columns([1, 10, 1])
-            with nav1:
-                if st.button("Previous Missing Row", disabled=st.session_state.foapal_current_pos == 0):
-                    st.session_state.foapal_current_pos -= 1
-                    st.rerun()
-            with nav2:
-                if st.button(
-                    "Next Missing Row",
-                    disabled=st.session_state.foapal_current_pos >= len(missing_ids) - 1,
-                ):
-                    st.session_state.foapal_current_pos += 1
-                    st.rerun()
-
-            if submitted:
+            if save_clicked:
                 updates = {
                     'Fund Code:': fund_code,
                     'Organization:': organization,
@@ -1127,28 +1241,36 @@ elif step == 3:
                     st.session_state.teams_workflow,
                     required_cols,
                 )])
-                if current_row_id not in refreshed_missing_ids and refreshed_missing_ids:
-                    st.session_state.foapal_current_pos = min(
-                        st.session_state.foapal_current_pos,
-                        len(refreshed_missing_ids) - 1,
-                    )
-                elif not refreshed_missing_ids:
+                current_pos = st.session_state.foapal_current_pos
+                row_still_missing = current_row_id in refreshed_missing_ids
+
+                if not refreshed_missing_ids:
                     st.session_state.foapal_current_pos = 0
+                elif not row_still_missing:
+                    st.session_state.foapal_current_pos = min(current_pos, len(refreshed_missing_ids) - 1)
+
+                st.session_state.foapal_next_confirm = False
                 render_helper_box("FOAPAL saved.", "success")
                 st.rerun()
 
-        if missing_ids:
-            st.divider()
-            render_helper_box("You can continue now and review the remaining FOAPAL values after download.", "warning")
-            st.markdown("<div style='height: 0.45rem;'></div>", unsafe_allow_html=True)
-            if st.button("Review Rest After Download"):
-                st.session_state.foapal_review_skipped = True
-                go_next()
+        nav_back, nav_spacer, nav_next = st.columns([1, 10, 1])
+        with nav_back:
+            if st.button("Back", key="foapal_back"):
+                st.session_state.foapal_next_confirm = False
+                go_back()
                 st.rerun()
+        with nav_next:
+            next_inner_spacer, next_inner = st.columns([1, 1])
+            with next_inner:
+                if st.button("Next", key="foapal_next_step"):
+                    if missing_ids:
+                        st.session_state.foapal_next_confirm = True
+                        st.rerun()
+                    go_next()
+                    st.rerun()
 
-        has_missing_required = missing_required_mask(st.session_state.teams_workflow, required_cols).any()
-        can_next = (not has_missing_required) or st.session_state.foapal_review_skipped
-        render_back_next(can_next=can_next)
+        if missing_ids and st.session_state.foapal_next_confirm:
+            render_foapal_missing_confirm_dialog(len(missing_ids))
 
 elif step == 4:
     st.subheader("Download Output")
@@ -1159,14 +1281,8 @@ elif step == 4:
     else:
         required_cols = ['Fund Code:', 'Organization:', 'Account:', 'Program:', 'AD Code:']
         has_missing_required = missing_required_mask(st.session_state.teams_workflow, required_cols).any()
-        if has_missing_required and not st.session_state.foapal_review_skipped:
-            render_helper_box("Cannot generate final output until all required FOAPAL cells are filled.", "error")
-            st.markdown("<div style='height: 0.45rem;'></div>", unsafe_allow_html=True)
-            render_back_next(can_next=False)
-            st.stop()
-
-        if has_missing_required and st.session_state.foapal_review_skipped:
-            render_helper_box("Generating output with missing FOAPAL values because review was skipped.", "warning")
+        if has_missing_required:
+            render_helper_box("Some FOAPAL values are missing. You can still download the output and fill them in later.", "warning")
             st.markdown("<div style='height: 0.45rem;'></div>", unsafe_allow_html=True)
 
         current_output_signature = build_final_output_signature()
