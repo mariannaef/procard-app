@@ -1219,7 +1219,7 @@ def run_procard_pipeline(
 
     workflow_transaction_rows = workflow.loc[workflow_transaction_mask].copy()
     comparable_workflow_rows = workflow_transaction_rows.loc[
-        ~workflow_transaction_rows.index.isin(previous_statement_indices)
+        workflow_transaction_rows.index.isin(matched_workflow_rows)
     ].copy()
     pdf_parsed_total = float(round(bank_df['Amount'].apply(parse_amount).sum(), 2)) if not bank_df.empty else 0.0
     comparable_workflow_total = float(round(comparable_workflow_rows['Amount: $'].apply(parse_amount).sum(), 2))
@@ -1242,26 +1242,16 @@ def run_procard_pipeline(
     print(f"  Difference (PDF - workflow): ${total_difference:,.2f}")
 
     # 4. STAGE 2: CREATE TEAMS WORKFLOW (Cleaned version of CSV)
-    # Filter workflow to in-cycle and PDF-matched rows FIRST (on original row indices),
-    # then expand split transactions so the final output matches the human-reviewed sheet.
-    if statement_cycle_start and statement_cycle_end:
-        parsed_team_dates = workflow['Date of Transaction:'].apply(
-            lambda d: parse_workflow_date(d, statement_cycle_start, statement_cycle_end)
+    # Keep only workflow rows that were matched to parsed PDF transactions,
+    # then expand split transactions so the final output reflects PDF∩workflow rows only.
+    matched_pdf_mask = workflow.index.to_series().isin(matched_workflow_rows)
+    removed_count = int((~matched_pdf_mask).sum())
+    workflow_kept = workflow.loc[matched_pdf_mask].copy()
+    if removed_count:
+        print(
+            f"Excluded {removed_count} workflow row(s) not matched to parsed PDF transactions "
+            f"from TEAMS WORKFLOW/FILE FEED."
         )
-        in_cycle_mask = parsed_team_dates.apply(
-            lambda d: (d is None) or (statement_cycle_start <= d <= statement_cycle_end)
-        )
-        matched_pdf_mask = workflow.index.to_series().isin(matched_workflow_rows)
-        keep_mask = in_cycle_mask | matched_pdf_mask
-        removed_count = int((~keep_mask).sum())
-        workflow_kept = workflow.loc[keep_mask].copy()
-        if removed_count:
-            print(
-                f"Excluded {removed_count} out-of-range rows from TEAMS WORKFLOW/FILE FEED "
-                f"(outside {format_statement_cycle(statement_cycle_start, statement_cycle_end)})."
-            )
-    else:
-        workflow_kept = workflow.copy()
 
     # Expand split transactions on the filtered rows.
     # Each row with multiple FOAPAL lines becomes one row per line (main + splits).
