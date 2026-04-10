@@ -7,6 +7,7 @@ from io import BytesIO
 from pathlib import Path
 from difflib import SequenceMatcher
 from datetime import datetime, date
+from openpyxl.styles import Font
 
 STATE_CODES = {
     'AL', 'AK', 'AZ', 'AR', 'CA', 'CO', 'CT', 'DE', 'FL', 'GA', 'HI', 'ID', 'IL', 'IN', 'IA',
@@ -17,6 +18,18 @@ STATE_CODES = {
 
 GENERIC_MERCHANT_TOKENS = {'HTTP', 'HTTPS', 'WWW', 'COM', 'PROD', 'HELP', 'GOSQ'}
 FILE_FEED_COLUMN_WIDTHS = [31.14, 1.57, 12.43, 1.29, 28.14, 6.29, 5.29]
+WORKBOOK_FONT_NAME = 'Aptos Narrow'
+
+
+def apply_workbook_font(workbook, font_name=WORKBOOK_FONT_NAME, font_size=11):
+    """Apply a default font to all populated cells in all workbook sheets."""
+    font = Font(name=font_name, size=font_size)
+    for ws in workbook.worksheets:
+        if ws.max_row <= 0 or ws.max_column <= 0:
+            continue
+        for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
+            for cell in row:
+                cell.font = font
 
 def clean_val(val):
     """Cleans tabs and whitespace from CSV data."""
@@ -216,6 +229,7 @@ def write_output_workbook(output_file, file_feed, teams_workflow, bank_review, w
         if file_feed_ws is not None:
             for col_letter, width in zip(['A', 'B', 'C', 'D', 'E', 'F', 'G'], FILE_FEED_COLUMN_WIDTHS):
                 file_feed_ws.column_dimensions[col_letter].width = width
+        apply_workbook_font(writer.book)
 
 
 def build_file_feed_from_teams_workflow(teams_workflow, batch_date):

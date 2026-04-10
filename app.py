@@ -10,6 +10,7 @@ from calendar import monthrange
 
 import pandas as pd
 import streamlit as st
+from openpyxl.styles import Font
 
 from processor import build_file_feed_from_teams_workflow, run_procard_pipeline
 
@@ -40,6 +41,18 @@ STEP_TITLES = [
 ]
 
 FILE_FEED_COLUMN_WIDTHS = [31.14, 1.57, 12.43, 1.29, 28.14, 6.29, 5.29]
+WORKBOOK_FONT_NAME = "Aptos Narrow"
+
+
+def apply_workbook_font(workbook, font_name=WORKBOOK_FONT_NAME, font_size=11):
+    """Apply a default font to all populated cells in all workbook sheets."""
+    font = Font(name=font_name, size=font_size)
+    for ws in workbook.worksheets:
+        if ws.max_row <= 0 or ws.max_column <= 0:
+            continue
+        for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
+            for cell in row:
+                cell.font = font
 
 
 def hex_to_rgba(hex_color, alpha):
@@ -230,7 +243,12 @@ def apply_brand_theme():
         }}
 
         .st-key-mode_box,
-        .st-key-upload_mode_box {{
+        .st-key-upload_mode_box,
+        .st-key-workflow_upload_box,
+        .st-key-bank_upload_box,
+        .st-key-batch_date_box,
+        .st-key-resume_upload_box,
+        .st-key-resume_batch_date_box {{
             border: 1px solid rgba(93, 23, 37, 0.24) !important;
             background-color: rgba(93, 23, 37, 0.03) !important;
             border-radius: 10px !important;
@@ -736,6 +754,7 @@ def build_final_workbook_bytes():
         if file_feed_ws is not None:
             for col_letter, width in zip(["A", "B", "C", "D", "E", "F", "G"], FILE_FEED_COLUMN_WIDTHS):
                 file_feed_ws.column_dimensions[col_letter].width = width
+        apply_workbook_font(writer.book)
     output.seek(0)
     return output.getvalue()
 
@@ -807,26 +826,30 @@ elif step == 1:
         session_mode = st.radio(
             "Mode",
             ["New reconciliation", "Resume previous download"],
-            index=0 if st.session_state.session_mode == "New reconciliation" else 1,
+            key="session_mode",
             horizontal=True,
         )
-    st.session_state.session_mode = session_mode
 
     if session_mode == "Resume previous download":
-        resume_file = st.file_uploader(
-            "Upload a previously downloaded ProCard workbook (.xlsx)",
-            type=["xlsx"],
-            key="resume_upload",
-            help="Upload a Final_ProCard_Upload file previously downloaded from this app to continue reviewing unfilled FOAPAL rows.",
-        )
+        resume_upload_box = st.container(key="resume_upload_box")
+        with resume_upload_box:
+            resume_file = st.file_uploader(
+                "Upload a previously downloaded ProCard workbook (.xlsx)",
+                type=["xlsx"],
+                key="resume_upload",
+                help="Upload a Final_ProCard_Upload file previously downloaded from this app to continue reviewing unfilled FOAPAL rows.",
+            )
         st.session_state.resume_file = resume_file
 
-        st.session_state.batch_date = st.text_input(
-            "Batch date (last day of month, YYMMDD)",
-            value=st.session_state.batch_date,
-        )
-        if st.session_state.batch_date and not is_last_day_batch_date_YYMMDD(st.session_state.batch_date):
-            render_helper_box("Batch date should be the last day of the month in YYMMDD format.", "warning")
+        st.markdown("<div style='height: 0.5rem;'></div>", unsafe_allow_html=True)
+        resume_batch_date_box = st.container(key="resume_batch_date_box")
+        with resume_batch_date_box:
+            st.session_state.batch_date = st.text_input(
+                "Batch date (last day of month, YYMMDD)",
+                value=st.session_state.batch_date,
+            )
+            if st.session_state.batch_date and not is_last_day_batch_date_YYMMDD(st.session_state.batch_date):
+                render_helper_box("Batch date should be the last day of the month in YYMMDD format.", "warning")
 
         can_resume = False
         if resume_file:
@@ -861,53 +884,58 @@ elif step == 1:
         st.stop()
 
     # ── New reconciliation ────────────────────────────────────────────────────
-    st.session_state.workflow_file = st.file_uploader(
-        "Upload ProCard workflow CSV",
-        type=["csv"],
-        key="workflow_upload",
-    )
+    workflow_upload_box = st.container(key="workflow_upload_box")
+    with workflow_upload_box:
+        st.session_state.workflow_file = st.file_uploader(
+            "Upload ProCard workflow CSV",
+            type=["csv"],
+            key="workflow_upload",
+        )
 
+    st.markdown("<div style='height: 0.5rem;'></div>", unsafe_allow_html=True)
     available_input_modes = ["ZIP file", "PDF files"]
     if st.session_state.input_mode not in available_input_modes:
         st.session_state.input_mode = "ZIP file"
 
-    upload_mode_box = st.container(key="upload_mode_box")
-    with upload_mode_box:
+    bank_upload_box = st.container(key="bank_upload_box")
+    with bank_upload_box:
         input_mode = st.radio(
             "Bank statement upload method",
             available_input_modes,
-            index=available_input_modes.index(st.session_state.input_mode),
+            key="input_mode",
             horizontal=True,
         )
-    st.session_state.input_mode = input_mode
+        if input_mode == "ZIP file":
+            st.session_state.zip_file = st.file_uploader(
+                "Upload ZIP containing bank statement PDFs",
+                type=["zip"],
+                key="zip_upload",
+            )
+            st.session_state.pdf_files = []
+            bank_ready = st.session_state.zip_file is not None
+        else:
+            st.session_state.zip_file = None
+            st.session_state.pdf_files = st.file_uploader(
+                "Upload one or more bank statement PDFs",
+                type=["pdf"],
+                accept_multiple_files=True,
+                key="pdf_uploads",
+            )
+            pdf_count = len(st.session_state.pdf_files or [])
+            bank_ready = pdf_count > 0
+            if pdf_count > 0:
+                render_helper_box(f"{pdf_count} PDF file(s) uploaded.", "success")
+                st.markdown("<div style='height: 0.35rem;'></div>", unsafe_allow_html=True)
 
-    if input_mode == "ZIP file":
-        st.session_state.zip_file = st.file_uploader(
-            "Upload ZIP containing bank statement PDFs",
-            type=["zip"],
-            key="zip_upload",
+    st.markdown("<div style='height: 0.5rem;'></div>", unsafe_allow_html=True)
+    batch_date_box = st.container(key="batch_date_box")
+    with batch_date_box:
+        st.session_state.batch_date = st.text_input(
+            "Batch date (last day of month, YYMMDD)",
+            value=st.session_state.batch_date,
         )
-        st.session_state.pdf_files = []
-        bank_ready = st.session_state.zip_file is not None
-    else:
-        st.session_state.zip_file = None
-        st.session_state.pdf_files = st.file_uploader(
-            "Upload one or more bank statement PDFs",
-            type=["pdf"],
-            accept_multiple_files=True,
-            key="pdf_uploads",
-        )
-        pdf_count = len(st.session_state.pdf_files or [])
-        bank_ready = pdf_count > 0
-        if pdf_count > 0:
-            render_helper_box(f"{pdf_count} PDF file(s) uploaded.", "success")
-            st.markdown("<div style='height: 0.35rem;'></div>", unsafe_allow_html=True)
-    st.session_state.batch_date = st.text_input(
-        "Batch date (last day of month, YYMMDD)",
-        value=st.session_state.batch_date,
-    )
-    if st.session_state.batch_date and not is_last_day_batch_date_YYMMDD(st.session_state.batch_date):
-        render_helper_box("Batch date should be the last day of the month in YYMMDD format.", "warning")
+        if st.session_state.batch_date and not is_last_day_batch_date_YYMMDD(st.session_state.batch_date):
+            render_helper_box("Batch date should be the last day of the month in YYMMDD format.", "warning")
 
     can_next = st.session_state.workflow_file is not None and bank_ready
     render_back_next(can_next=can_next)
