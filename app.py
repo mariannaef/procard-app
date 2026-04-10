@@ -990,9 +990,20 @@ elif step == 2:
         rows_after_split = int(summary.get('rows_after_split', 0))
         statement_cycle = str(summary.get('statement_cycle', '') or '').strip()
 
+        workflow_only_in_scope = pd.DataFrame(columns=workflow_only.columns)
+        if not workflow_only.empty:
+            warning_series = workflow_only['Warning Missing'].fillna('').astype(str) if 'Warning Missing' in workflow_only.columns else pd.Series(["" for _ in range(len(workflow_only))])
+            out_of_date_mask = warning_series.str.startswith('Likely on previous statement') | warning_series.str.startswith('Likely on next statement')
+            workflow_only_in_scope = workflow_only.loc[~out_of_date_mask].copy()
+
         totals_match = abs(total_difference) < 0.005
-        if totals_match:
+        if totals_match and workflow_only_in_scope.empty:
             render_helper_box("Processing complete. No errors detected.", "success")
+        elif totals_match and not workflow_only_in_scope.empty:
+            render_helper_box(
+                "Processing complete, but one or more in-cycle Workflow rows are missing PDF matches. Review the rows below before proceeding.",
+                "error",
+            )
         else:
             render_helper_box("Processing complete. Errors detected: totals do not match.", "error")
 
@@ -1004,13 +1015,12 @@ elif step == 2:
             )
             st.markdown("<div style='height: 0.75rem;'></div>", unsafe_allow_html=True)
 
-        if not totals_match:
-            workflow_only_in_scope = pd.DataFrame(columns=workflow_only.columns)
-            if not workflow_only.empty:
-                warning_series = workflow_only['Warning Missing'].fillna('').astype(str) if 'Warning Missing' in workflow_only.columns else pd.Series(["" for _ in range(len(workflow_only))])
-                out_of_date_mask = warning_series.str.startswith('Likely on previous statement') | warning_series.str.startswith('Likely on next statement')
-                workflow_only_in_scope = workflow_only.loc[~out_of_date_mask].copy()
+        if not workflow_only_in_scope.empty:
+            st.markdown("<div style='height: 0.5rem;'></div>", unsafe_allow_html=True)
+            st.write("Workflow rows missing PDF match (in statement cycle)")
+            st.dataframe(workflow_only_in_scope.fillna("").astype(str), width='stretch')
 
+        if not totals_match:
             bank_cmp = bank_review.copy()
             workflow_cmp = workflow_review.copy()
 
@@ -1050,11 +1060,6 @@ elif step == 2:
             bank_only_rows = select_rows_by_key_counts(bank_cmp, '_key', bank_only_counter)
             if '_key' in bank_only_rows.columns:
                 bank_only_rows = bank_only_rows.drop(columns=['_key'])
-
-            if not workflow_only_in_scope.empty:
-                st.markdown("<div style='height: 0.5rem;'></div>", unsafe_allow_html=True)
-                st.write("Mismatched Workflow rows (not excluded for out-of-date)")
-                st.dataframe(workflow_only_in_scope.fillna("").astype(str), width='stretch')
 
             if not bank_only_rows.empty:
                 st.markdown("<div style='height: 0.5rem;'></div>", unsafe_allow_html=True)
