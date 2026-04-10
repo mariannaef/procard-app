@@ -11,8 +11,9 @@ from calendar import monthrange
 import pandas as pd
 import streamlit as st
 from openpyxl.styles import Font
+from openpyxl.utils import get_column_letter
 
-from processor import build_file_feed_from_teams_workflow, run_procard_pipeline
+from processor import FILE_FEED_COLUMN_WIDTHS, build_file_feed_from_teams_workflow, run_procard_pipeline
 
 
 st.set_page_config(page_title="ProCard Reconciliation App", layout="wide")
@@ -40,19 +41,47 @@ STEP_TITLES = [
     "Download Output",
 ]
 
-FILE_FEED_COLUMN_WIDTHS = [31.14, 1.57, 12.43, 1.29, 28.14, 6.29, 5.29]
 WORKBOOK_FONT_NAME = "Aptos Narrow"
 
 
 def apply_workbook_font(workbook, font_name=WORKBOOK_FONT_NAME, font_size=11):
-    """Apply a default font to all populated cells in all workbook sheets."""
+    """Apply default workbook font (including Normal style) across all sheets."""
     font = Font(name=font_name, size=font_size)
+
+    # Set workbook default "Normal" style so Excel width rendering is consistent.
+    try:
+        for named_style in getattr(workbook, "_named_styles", []):
+            if getattr(named_style, "name", "") == "Normal":
+                named_style.font = font
+                break
+    except Exception:
+        pass
+
     for ws in workbook.worksheets:
         if ws.max_row <= 0 or ws.max_column <= 0:
             continue
         for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
             for cell in row:
                 cell.font = font
+
+
+def autofit_worksheet_columns(worksheet, min_width=4, max_width=60):
+    """Auto-fit worksheet column widths from current cell values."""
+    if worksheet is None or worksheet.max_column <= 0:
+        return
+
+    for col_idx in range(1, worksheet.max_column + 1):
+        max_len = 0
+        for row_idx in range(1, worksheet.max_row + 1):
+            val = worksheet.cell(row=row_idx, column=col_idx).value
+            if val is None:
+                continue
+            cell_len = len(str(val))
+            if cell_len > max_len:
+                max_len = cell_len
+
+        width = max(min_width, min(max_width, max_len + 2))
+        worksheet.column_dimensions[get_column_letter(col_idx)].width = width
 
 
 def hex_to_rgba(hex_color, alpha):
@@ -751,9 +780,7 @@ def build_final_workbook_bytes():
         workflow_only_rows.to_excel(writer, sheet_name="Workflow Not In PDF", index=False)
 
         file_feed_ws = writer.sheets.get("FILE FEED")
-        if file_feed_ws is not None:
-            for col_letter, width in zip(["A", "B", "C", "D", "E", "F", "G"], FILE_FEED_COLUMN_WIDTHS):
-                file_feed_ws.column_dimensions[col_letter].width = width
+        autofit_worksheet_columns(file_feed_ws)
         apply_workbook_font(writer.book)
     output.seek(0)
     return output.getvalue()
