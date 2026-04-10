@@ -8,15 +8,6 @@ from contextlib import redirect_stdout
 from datetime import datetime
 from calendar import monthrange
 
-try:
-    import tkinter as tk
-    from tkinter import filedialog
-    TKINTER_AVAILABLE = True
-except Exception:
-    tk = None
-    filedialog = None
-    TKINTER_AVAILABLE = False
-
 import pandas as pd
 import streamlit as st
 
@@ -304,25 +295,13 @@ def render_top_logo():
         pass
 
 
-def browse_for_folder():
-    """Open a native OS folder-picker dialog and return the selected path (or empty string)."""
-    if not TKINTER_AVAILABLE:
-        return ""
-    root = tk.Tk()
-    root.withdraw()
-    root.wm_attributes("-topmost", True)
-    folder = filedialog.askdirectory(parent=root, title="Select folder containing bank statement PDFs")
-    root.destroy()
-    return folder or ""
-
-
 def init_state():
     defaults = {
         "step": 0,
         "workflow_file": None,
         "zip_file": None,
+        "pdf_files": [],
         "input_mode": "ZIP file",
-        "pdf_folder": "",
         "session_mode": "New reconciliation",
         "resume_file": None,
         "resume_requested": False,
@@ -380,8 +359,8 @@ def is_last_day_batch_date_YYMMDD(value):
 def reset_upload_step_state():
     st.session_state.workflow_file = None
     st.session_state.zip_file = None
+    st.session_state.pdf_files = []
     st.session_state.input_mode = "ZIP file"
-    st.session_state.pdf_folder = ""
     st.session_state.session_mode = "New reconciliation"
     st.session_state.resume_file = None
     st.session_state.batch_date = default_batch_date()
@@ -389,6 +368,8 @@ def reset_upload_step_state():
         del st.session_state["workflow_upload"]
     if "zip_upload" in st.session_state:
         del st.session_state["zip_upload"]
+    if "pdf_uploads" in st.session_state:
+        del st.session_state["pdf_uploads"]
 
 
 def reset_parse_step_state():
@@ -696,11 +677,10 @@ def run_processing_pipeline():
     if st.session_state.input_mode == "ZIP file":
         bank_zip = io.BytesIO(st.session_state.zip_file.getvalue())
     else:
-        folder = st.session_state.pdf_folder
         bank_pdf_files = [
-            (fname, open(os.path.join(folder, fname), "rb").read())
-            for fname in os.listdir(folder)
-            if fname.lower().endswith(".pdf")
+            (uploaded.name, uploaded.getvalue())
+            for uploaded in (st.session_state.pdf_files or [])
+            if uploaded is not None
         ]
 
     log_buf = io.StringIO()
@@ -887,7 +867,7 @@ elif step == 1:
         key="workflow_upload",
     )
 
-    available_input_modes = ["ZIP file", "Folder of PDFs"] if TKINTER_AVAILABLE else ["ZIP file"]
+    available_input_modes = ["ZIP file", "PDF files"]
     if st.session_state.input_mode not in available_input_modes:
         st.session_state.input_mode = "ZIP file"
 
@@ -901,77 +881,27 @@ elif step == 1:
         )
     st.session_state.input_mode = input_mode
 
-    if not TKINTER_AVAILABLE:
-        render_helper_box(
-            "Folder of PDFs is only available in the desktop app. On Streamlit Cloud, please upload a ZIP file containing the bank statement PDFs.",
-            "info",
-        )
-        st.markdown("<div style='height: 0.35rem;'></div>", unsafe_allow_html=True)
-
     if input_mode == "ZIP file":
         st.session_state.zip_file = st.file_uploader(
             "Upload ZIP containing bank statement PDFs",
             type=["zip"],
             key="zip_upload",
         )
-        st.session_state.pdf_folder = ""
+        st.session_state.pdf_files = []
         bank_ready = st.session_state.zip_file is not None
     else:
         st.session_state.zip_file = None
-        folder_path = st.session_state.pdf_folder
-
-        # ── folder picker styled like the file uploader ────────────────────
-        if folder_path:
-            pdf_count = sum(1 for f in os.listdir(folder_path) if f.lower().endswith(".pdf")) if os.path.isdir(folder_path) else 0
-            icon = "✅" if pdf_count > 0 else "⚠️"
-            summary_line = f"{pdf_count} PDF file(s) selected" if pdf_count > 0 else "No PDF files found in this folder"
-            folder_display = (
-                f"<span style='font-weight:600;color:{BLACK};'>{icon} {os.path.basename(folder_path) or folder_path}</span>"
-                f"<br><span style='font-size:0.8rem;color:{BRAND_GREY};'>{folder_path}</span>"
-                f"<br><span style='font-size:0.8rem;color:{BRAND_GREY};'>{summary_line}</span>"
-            )
-            bank_ready = pdf_count > 0
-        else:
-            folder_display = (
-                f"<span style='color:{BRAND_GREY};font-size:0.9rem;'>"
-                "Drag and drop a folder here, or click <strong>Browse folder</strong>"
-                "</span>"
-            )
-            bank_ready = False
-
-        st.markdown("**Upload folder containing bank statement PDFs**")
-        st.markdown(
-            f"""
-            <div style="
-                border: 1px solid {BRAND_LIGHT};
-                border-radius: 6px;
-                padding: 1.1rem 1rem 0.9rem 1rem;
-                background: #fafafa;
-                margin-bottom: 0.5rem;
-                min-height: 72px;
-                display: flex;
-                align-items: center;
-            ">
-                <div style="width:100%;">{folder_display}</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
+        st.session_state.pdf_files = st.file_uploader(
+            "Upload one or more bank statement PDFs",
+            type=["pdf"],
+            accept_multiple_files=True,
+            key="pdf_uploads",
         )
-        col_browse, col_clear, col_pad = st.columns([1, 1, 5])
-        with col_browse:
-            if st.button("Browse folder"):
-                selected = browse_for_folder()
-                if selected:
-                    st.session_state.pdf_folder = selected
-                    st.rerun()
-        with col_clear:
-            if folder_path and st.button("✕ Clear"):
-                st.session_state.pdf_folder = ""
-                st.rerun()
-
-        if folder_path and not os.path.isdir(folder_path):
-            render_helper_box("Folder not found. Click Browse to select again.", "error")
-            bank_ready = False
+        pdf_count = len(st.session_state.pdf_files or [])
+        bank_ready = pdf_count > 0
+        if pdf_count > 0:
+            render_helper_box(f"{pdf_count} PDF file(s) uploaded.", "success")
+            st.markdown("<div style='height: 0.35rem;'></div>", unsafe_allow_html=True)
     st.session_state.batch_date = st.text_input(
         "Batch date (last day of month, YYMMDD)",
         value=st.session_state.batch_date,
