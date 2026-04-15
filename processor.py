@@ -19,6 +19,8 @@ STATE_CODES = {
 GENERIC_MERCHANT_TOKENS = {'HTTP', 'HTTPS', 'WWW', 'COM', 'PROD', 'HELP', 'GOSQ'}
 FILE_FEED_COLUMN_WIDTHS = [31.14, 1.57, 12.43, 1.29, 28.14, 6.29, 5.29]
 WORKBOOK_FONT_NAME = 'Aptos Narrow'
+PROCARD_TOTAL_TASK_NAME = 'PROCARD TOTAL'
+PROCARD_TOTAL_LABEL = 'PROCARD'
 
 
 def apply_workbook_font(workbook, font_name=WORKBOOK_FONT_NAME, font_size=11):
@@ -55,6 +57,64 @@ def parse_amount(val, default=0.0):
         return float(s)
     except ValueError:
         return default
+
+
+def procard_total_row_mask(df):
+    """Identify synthetic PROCARD total rows by task name."""
+    if df is None or len(df) == 0:
+        return pd.Series(dtype=bool)
+    if 'Current Task Name' not in df.columns:
+        return pd.Series([False] * len(df), index=df.index)
+    return df['Current Task Name'].apply(lambda v: clean_val(v).upper() == PROCARD_TOTAL_TASK_NAME)
+
+
+def append_procard_total_row(teams_workflow, total_amount=None):
+    """Append a bottom summary row labeled PROCARD with Statement Credit=True.
+
+    Credits remain negative and debits positive in the net total amount.
+    """
+    if teams_workflow is None:
+        return teams_workflow
+
+    result = teams_workflow.copy()
+    existing_mask = procard_total_row_mask(result)
+    if len(existing_mask) == len(result) and existing_mask.any():
+        result = result.loc[~existing_mask].copy()
+
+    if total_amount is None:
+        total_amount = float(round(result.get('Amount: $', pd.Series(dtype=float)).apply(parse_amount).sum(), 2))
+    else:
+        total_amount = float(round(parse_amount(total_amount), 2))
+
+    summary_row = {col: "" for col in result.columns}
+    if 'Current Task Name' in summary_row:
+        summary_row['Current Task Name'] = PROCARD_TOTAL_TASK_NAME
+    if 'Sport' in summary_row:
+        summary_row['Sport'] = PROCARD_TOTAL_LABEL
+    if 'Merchant:' in summary_row:
+        summary_row['Merchant:'] = PROCARD_TOTAL_LABEL
+    if 'Date of Transaction:' in summary_row:
+        summary_row['Date of Transaction:'] = ""
+    if 'Amount: $' in summary_row:
+        summary_row['Amount: $'] = total_amount
+    if 'Card Holder:' in summary_row:
+        summary_row['Card Holder:'] = PROCARD_TOTAL_LABEL
+    if 'Fund Code:' in summary_row:
+        summary_row['Fund Code:'] = ""
+    if 'Organization:' in summary_row:
+        summary_row['Organization:'] = ""
+    if 'Account:' in summary_row:
+        summary_row['Account:'] = ""
+    if 'Program:' in summary_row:
+        summary_row['Program:'] = ""
+    if 'AD Code:' in summary_row:
+        summary_row['AD Code:'] = ""
+    if 'Amount:' in summary_row:
+        summary_row['Amount:'] = ""
+    if 'Statement Credit' in summary_row:
+        summary_row['Statement Credit'] = True
+
+    return pd.concat([result, pd.DataFrame([summary_row], columns=result.columns)], ignore_index=True)
 
 
 def normalize_mmdd(val):
@@ -244,46 +304,103 @@ def write_output_workbook(output_file, file_feed, teams_workflow, bank_review, w
 
 def build_file_feed_from_teams_workflow(teams_workflow, batch_date):
     """Build FILE FEED dataframe from TEAMS WORKFLOW dataframe."""
+    if teams_workflow is None or teams_workflow.empty:
+        return pd.DataFrame(columns=['Col1', 'Col2', 'Col3', 'Col4', 'Col5', 'Col6', 'Col7'])
+
+    summary_mask = procard_total_row_mask(teams_workflow)
+    summary_rows = teams_workflow.loc[summary_mask].copy() if len(summary_mask) == len(teams_workflow) else pd.DataFrame(columns=teams_workflow.columns)
+    teams_workflow = teams_workflow.loc[~summary_mask].copy() if len(summary_mask) == len(teams_workflow) else teams_workflow.copy()
+
     def format_segment(val):
         s = str(val).split('.')[0].strip() if pd.notna(val) else ""
         return s.ljust(6)[:6]
 
-    def effective_distribution_amount(row):
-        """Use split amount when present; otherwise retain original transaction amount."""
-        split_amount_raw = row.get('Amount:', '')
-        split_amount = parse_amount(split_amount_raw)
-        transaction_amount = parse_amount(row.get('Amount: $', 0.0))
+    def build_col1_from_row(row):
+        return (
+            format_segment(row.get('Fund Code:', '')) +
+            format_segment(row.get('Organization:', '')) +
+            format_segment(row.get('Account:', '')) +
+            format_segment(row.get('Program:', '')) +
+            format_segment(row.get('AD Code:', ''))
+        )
 
-        # In source data, blank distribution amounts can be coerced to 0.0.
-        # When that happens, keep the transaction amount so FILE FEED Col3 is not zeroed out.
-        if clean_val(split_amount_raw) == "" or (split_amount == 0.0 and transaction_amount != 0.0):
-            return transaction_amount
-        return split_amount
+    def row_has_real_foapal(row):
+        for col in ['Fund Code:', 'Organization:', 'Account:', 'Program:', 'AD Code:']:
+            token = clean_val(row.get(col, '')).upper()
+            if token and token not in {PROCARD_TOTAL_LABEL, PROCARD_TOTAL_TASK_NAME}:
+                return True
+        return False
 
-    file_feed = pd.DataFrame()
-    # 30-character account string
-    file_feed['Col1'] = (
-        teams_workflow['Fund Code:'].apply(format_segment) +
-        teams_workflow['Organization:'].apply(format_segment) +
-        teams_workflow['Account:'].apply(format_segment) +
-        teams_workflow['Program:'].apply(format_segment) +
-        teams_workflow['AD Code:'].apply(format_segment)
-    )
-    file_feed['Col2'] = ""
-    effective_amounts = teams_workflow.apply(effective_distribution_amount, axis=1)
-    # 12-digit cents
-    file_feed['Col3'] = effective_amounts.apply(
-        lambda x: f"{int(round(abs(x) * 100)):012d}"
-    )
-    file_feed['Col4'] = teams_workflow.assign(_effective_amount=effective_amounts).apply(
-        lambda row: '-' if row['Statement Credit'] and row['_effective_amount'] < 0 else (
-            '-' if row['_effective_amount'] < 0 else '+'
-        ),
-        axis=1
-    )
-    file_feed['Col5'] = teams_workflow['Merchant:']
-    file_feed['Col6'] = batch_date
-    file_feed['Col7'] = '*****'
+    def merchant_with_leading_tab(val):
+        merchant = clean_val(val)
+        return f"\t{merchant}" if merchant else ""
+
+    if teams_workflow.empty:
+        file_feed = pd.DataFrame(columns=['Col1', 'Col2', 'Col3', 'Col4', 'Col5', 'Col6', 'Col7'])
+    else:
+        def effective_distribution_amount(row):
+            """Use split amount when present; otherwise retain original transaction amount."""
+            split_amount_raw = row.get('Amount:', '')
+            split_amount = parse_amount(split_amount_raw)
+            transaction_amount = parse_amount(row.get('Amount: $', 0.0))
+
+            # In source data, blank distribution amounts can be coerced to 0.0.
+            # When that happens, keep the transaction amount so FILE FEED Col3 is not zeroed out.
+            if clean_val(split_amount_raw) == "" or (split_amount == 0.0 and transaction_amount != 0.0):
+                return transaction_amount
+            return split_amount
+
+        file_feed = pd.DataFrame()
+        # 30-character account string
+        file_feed['Col1'] = (
+            teams_workflow['Fund Code:'].apply(format_segment) +
+            teams_workflow['Organization:'].apply(format_segment) +
+            teams_workflow['Account:'].apply(format_segment) +
+            teams_workflow['Program:'].apply(format_segment) +
+            teams_workflow['AD Code:'].apply(format_segment)
+        )
+        file_feed['Col2'] = ""
+        effective_amounts = teams_workflow.apply(effective_distribution_amount, axis=1)
+        # 12-digit cents
+        file_feed['Col3'] = effective_amounts.apply(
+            lambda x: f"{int(round(abs(x) * 100)):012d}"
+        )
+        file_feed['Col4'] = teams_workflow.assign(_effective_amount=effective_amounts).apply(
+            lambda row: '-' if row['Statement Credit'] and row['_effective_amount'] < 0 else (
+                '-' if row['_effective_amount'] < 0 else '+'
+            ),
+            axis=1
+        )
+        file_feed['Col5'] = teams_workflow['Merchant:'].apply(merchant_with_leading_tab)
+        file_feed['Col6'] = batch_date
+        file_feed['Col7'] = '*****'
+
+    # Add PROCARD total row to FILE FEED bottom, labeled as credit.
+    if not summary_rows.empty:
+        summary_row = summary_rows.iloc[-1]
+        summary_amount = parse_amount(summary_row.get('Amount: $', 0.0))
+
+        summary_col1 = ""
+        if row_has_real_foapal(summary_row):
+            summary_col1 = build_col1_from_row(summary_row)
+
+        summary_col5 = clean_val(summary_row.get('Merchant:', '')) or 'ProCard'
+        if summary_col5.upper() == PROCARD_TOTAL_LABEL:
+            summary_col5 = 'ProCard'
+
+        file_feed = pd.concat([
+            file_feed,
+            pd.DataFrame([{
+                'Col1': summary_col1,
+                'Col2': '',
+                'Col3': f"{int(round(abs(summary_amount) * 100)):012d}",
+                'Col4': '-',
+                'Col5': merchant_with_leading_tab(summary_col5),
+                'Col6': batch_date,
+                'Col7': '*****',
+            }])
+        ], ignore_index=True)
+
     return file_feed
 
 
@@ -1279,6 +1396,9 @@ def run_procard_pipeline(
     # Prompt user for missing FOAPAL values and fill before file feed generation
     if prompt_for_missing_foapal:
         teams_workflow = fill_missing_foapal(teams_workflow)
+
+    # Append PROCARD net total row at the bottom of TEAMS WORKFLOW.
+    teams_workflow = append_procard_total_row(teams_workflow, total_amount=comparable_workflow_total)
 
     # 5. STAGE 3: TRANSFORM TO FILE FEED
     file_feed = build_file_feed_from_teams_workflow(teams_workflow, batch_date)

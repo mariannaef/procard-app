@@ -12,7 +12,12 @@ import pandas as pd
 import streamlit as st
 from openpyxl.styles import Font
 
-from processor import FILE_FEED_COLUMN_WIDTHS, build_file_feed_from_teams_workflow, run_procard_pipeline
+from processor import (
+    FILE_FEED_COLUMN_WIDTHS,
+    append_procard_total_row,
+    build_file_feed_from_teams_workflow,
+    run_procard_pipeline,
+)
 
 
 st.set_page_config(page_title="ProCard Reconciliation App", layout="wide")
@@ -744,7 +749,11 @@ def run_processing_pipeline():
 
 
 def build_final_workbook_bytes():
-    teams_workflow = sanitize_for_output(st.session_state.teams_workflow)
+    comparable_total = None
+    if st.session_state.summary:
+        comparable_total = st.session_state.summary.get('comparable_workflow_total')
+    teams_workflow = append_procard_total_row(st.session_state.teams_workflow, total_amount=comparable_total)
+    teams_workflow = sanitize_for_output(teams_workflow)
     file_feed = build_file_feed_from_teams_workflow(teams_workflow, st.session_state.batch_date)
     file_feed = sanitize_for_output(file_feed)
     bank_review = sanitize_for_output(st.session_state.bank_review)
@@ -1158,7 +1167,9 @@ elif step == 3:
             st.markdown("<div style='height: 0.2rem;'></div>", unsafe_allow_html=True)
 
             with st.form(f"foapal_form_{current_row_id}"):
-                col1, col2, col3, col4, col5 = st.columns(5)
+                is_procard_total_row = str(current_row.get('Current Task Name', '')).strip().upper() == 'PROCARD TOTAL'
+                form_cols = st.columns(4 if is_procard_total_row else 5)
+                col1, col2, col3, col4 = form_cols[0], form_cols[1], form_cols[2], form_cols[3]
                 with col1:
                     fund_code = selectbox_value(
                         "Fund",
@@ -1178,18 +1189,22 @@ elif step == 3:
                         dropdown_options['Account:'],
                     )
                 with col4:
-                    ad_code = selectbox_value(
-                        "AD Code",
-                        current_row.get('AD Code:', ''),
-                        dropdown_options['AD Code:'],
-                    )
-                with col5:
                     program = selectbox_value(
                         "Program",
                         current_row.get('Program:', ''),
                         dropdown_options['Program:'],
                         allow_outside_current=False,
                     )
+                if is_procard_total_row:
+                    ad_code = ""
+                    st.caption("AD Code is not required for the PROCARD total row.")
+                else:
+                    with form_cols[4]:
+                        ad_code = selectbox_value(
+                            "AD Code",
+                            current_row.get('AD Code:', ''),
+                            dropdown_options['AD Code:'],
+                        )
                 action_spacer, action_save = st.columns([5.2, 0.3])
                 with action_save:
                     save_clicked = st.form_submit_button(
@@ -1204,7 +1219,7 @@ elif step == 3:
                     'Organization:': organization,
                     'Account:': account,
                     'Program:': program,
-                    'AD Code:': ad_code,
+                    'AD Code:': "" if is_procard_total_row else ad_code,
                 }
                 for col, value in updates.items():
                     st.session_state.teams_workflow.at[current_row_id, col] = "" if is_blank(value) else str(value).strip()
@@ -1221,7 +1236,7 @@ elif step == 3:
                 elif not row_still_missing:
                     st.session_state.foapal_current_pos = min(current_pos, len(refreshed_missing_ids) - 1)
 
-                st.session_state.foapal_next_confirm = False
+                st.session_state.foapal_next_confirm = bool(is_procard_total_row and row_still_missing)
                 render_helper_box("FOAPAL saved.", "success")
                 st.rerun()
 
