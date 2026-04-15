@@ -17,6 +17,7 @@ from processor import (
     append_procard_total_row,
     build_file_feed_from_teams_workflow,
     run_procard_pipeline,
+    write_output_workbook,
 )
 
 
@@ -761,18 +762,14 @@ def build_final_workbook_bytes():
     workflow_only_rows = sanitize_for_output(st.session_state.workflow_only_rows)
 
     output = io.BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        file_feed.to_excel(writer, sheet_name="FILE FEED", index=False, header=False)
-        teams_workflow.to_excel(writer, sheet_name="TEAMS WORKFLOW", index=False)
-        bank_review.to_excel(writer, sheet_name="PDF Parsed Transactions", index=False)
-        workflow_review.to_excel(writer, sheet_name="Original Workflow", index=False)
-        workflow_only_rows.to_excel(writer, sheet_name="Workflow Not In PDF", index=False)
-
-        file_feed_ws = writer.sheets.get("FILE FEED")
-        if file_feed_ws is not None:
-            for col_letter, width in zip(["A", "B", "C", "D", "E", "F", "G"], FILE_FEED_COLUMN_WIDTHS):
-                file_feed_ws.column_dimensions[col_letter].width = width
-        apply_workbook_font(writer.book)
+    write_output_workbook(
+        output_file=output,
+        file_feed=file_feed,
+        teams_workflow=teams_workflow,
+        bank_review=bank_review,
+        workflow_review=workflow_review,
+        workflow_only_rows=workflow_only_rows,
+    )
     output.seek(0)
     return output.getvalue()
 

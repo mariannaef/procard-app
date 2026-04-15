@@ -8,6 +8,7 @@ from pathlib import Path
 from difflib import SequenceMatcher
 from datetime import datetime, date
 from openpyxl.styles import Font
+from openpyxl import load_workbook
 
 STATE_CODES = {
     'AL', 'AK', 'AZ', 'AR', 'CA', 'CO', 'CT', 'DE', 'FL', 'GA', 'HI', 'ID', 'IL', 'IN', 'IA',
@@ -21,19 +22,68 @@ FILE_FEED_COLUMN_WIDTHS = [31.14, 1.57, 12.43, 1.29, 28.14, 6.29, 5.29]
 WORKBOOK_FONT_NAME = 'Aptos Narrow'
 PROCARD_TOTAL_TASK_NAME = 'PROCARD TOTAL'
 PROCARD_TOTAL_LABEL = 'PROCARD'
+FILE_FEED_TEMPLATE_FILENAME = 'file_feed_template.xlsx'
+
+
+def _resolve_file_feed_template_path(file_feed_template_path=None):
+    """Resolve optional FILE FEED template path.
+
+    Priority:
+      1) Explicit path argument
+      2) file_feed_template.xlsx in the same folder as this script
+    """
+    if file_feed_template_path:
+        p = Path(file_feed_template_path)
+        if p.exists() and p.is_file():
+            return p
+
+    default_path = Path(__file__).with_name(FILE_FEED_TEMPLATE_FILENAME)
+    if default_path.exists() and default_path.is_file():
+        return default_path
+
+    return None
+
+
+def apply_file_feed_widths_from_template_or_defaults(workbook, file_feed_template_path=None):
+    """Apply FILE FEED column widths from template when available, else fallback defaults."""
+    file_feed_ws = next((ws for ws in workbook.worksheets if ws.title == 'FILE FEED'), None)
+    if file_feed_ws is None:
+        return
+
+    col_letters = ['A', 'B', 'C', 'D', 'E', 'F', 'G']
+    applied_from_template = False
+    template_path = _resolve_file_feed_template_path(file_feed_template_path)
+
+    if template_path is not None:
+        try:
+            template_wb = load_workbook(template_path, data_only=True)
+            if 'FILE FEED' in template_wb.sheetnames:
+                template_ws = template_wb['FILE FEED']
+                width_map = {
+                    col: template_ws.column_dimensions[col].width
+                    for col in col_letters
+                }
+                if any(width_map[col] is not None for col in col_letters):
+                    for col in col_letters:
+                        if width_map[col] is not None:
+                            file_feed_ws.column_dimensions[col].width = width_map[col]
+                    applied_from_template = True
+            template_wb.close()
+        except Exception:
+            applied_from_template = False
+
+    if not applied_from_template:
+        for col_letter, width in zip(col_letters, FILE_FEED_COLUMN_WIDTHS):
+            file_feed_ws.column_dimensions[col_letter].width = width
 
 
 def apply_workbook_font(workbook, font_name=WORKBOOK_FONT_NAME, font_size=11):
-    """Apply default workbook font (including Normal style) across all sheets."""
+    """Apply Aptos Narrow font to every cell across all sheets."""
     font = Font(name=font_name, size=font_size)
-
-    # Set workbook default "Normal" style so Excel width rendering is consistent.
     try:
-        for named_style in getattr(workbook, "_named_styles", []):
-            if getattr(named_style, "name", "") == "Normal":
-                named_style.font = font
-                break
-    except Exception:
+        named_style = workbook.named_styles['Normal']
+        named_style.font = font
+    except (KeyError, IndexError, TypeError):
         pass
 
     for ws in workbook.worksheets:
@@ -286,7 +336,15 @@ def expand_split_transactions(workflow):
     return pd.DataFrame(expanded_rows).reset_index(drop=True)
 
 
-def write_output_workbook(output_file, file_feed, teams_workflow, bank_review, workflow_review, workflow_only_rows):
+def write_output_workbook(
+    output_file,
+    file_feed,
+    teams_workflow,
+    bank_review,
+    workflow_review,
+    workflow_only_rows,
+    file_feed_template_path=None,
+):
     """Write the final workbook sheets in the established order and format."""
     with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
         file_feed.to_excel(writer, sheet_name='FILE FEED', index=False, header=False)
@@ -295,10 +353,10 @@ def write_output_workbook(output_file, file_feed, teams_workflow, bank_review, w
         workflow_review.to_excel(writer, sheet_name='Original Workflow', index=False)
         workflow_only_rows.to_excel(writer, sheet_name='Workflow Not In PDF', index=False)
 
-        file_feed_ws = writer.sheets.get('FILE FEED')
-        if file_feed_ws is not None:
-            for col_letter, width in zip(['A', 'B', 'C', 'D', 'E', 'F', 'G'], FILE_FEED_COLUMN_WIDTHS):
-                file_feed_ws.column_dimensions[col_letter].width = width
+        apply_file_feed_widths_from_template_or_defaults(
+            writer.book,
+            file_feed_template_path=file_feed_template_path,
+        )
         apply_workbook_font(writer.book)
 
 
