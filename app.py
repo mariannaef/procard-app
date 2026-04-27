@@ -264,8 +264,8 @@ def apply_brand_theme():
         .st-key-batch_date_box,
         .st-key-resume_upload_box,
         .st-key-resume_batch_date_box {{
-            border: 1px solid rgba(93, 23, 37, 0.24) !important;
-            background-color: rgba(93, 23, 37, 0.03) !important;
+            border: 1px solid var(--brand-light) !important;
+            background-color: var(--white) !important;
             border-radius: 10px !important;
             padding: 0.4rem 0.7rem 0.2rem 0.7rem !important;
         }}
