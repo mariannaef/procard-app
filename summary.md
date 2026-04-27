@@ -1,4 +1,4 @@
-# PROCARD_PURCHASES  
+# PROCARD_APP  
 **Completed:** 04/03/2026
 
 ---
@@ -6,7 +6,7 @@
 ## What Is It?
 
 ### Project Overview
-PROCARD_PURCHASES is a `Streamlit` application built for the Athletic Business Office (ABO) to automate the monthly ProCard reconciliation process for athletic purchases. The app is designed to reduce manual formatting, improve reconciliation accuracy, and streamline the monthly processing of ProCard transactions across all athletic business purchases.
+PROCARD_APP is a `Streamlit` application built for the Athletic Business Office (ABO) to automate the monthly ProCard reconciliation process for athletic purchases. The app is designed to reduce manual formatting, improve reconciliation accuracy, and streamline the monthly processing of ProCard transactions across all athletic business purchases.
 
 The primary users are staff within the Athletic Business Office responsible for reviewing and reconciling ProCard activity.
 
